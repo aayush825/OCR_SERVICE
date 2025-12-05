@@ -32,15 +32,21 @@ const removeFile = (filePath) => {
 app.post("/solve", upload.single("image"), async (req, res) => {
   let filePath;
   try {
+    // Accept priority: multipart file `image`, JSON `captcha`, or JSON `imageBase64`
     if (req.file) {
       filePath = req.file.path;
+    } else if (req.body?.captcha) {
+      const base64 = req.body.captcha.replace(/^data:.*;base64,/, "");
+      const tempName = `${Date.now()}-${Math.random().toString(16).slice(2)}.png`;
+      filePath = path.join(uploadDir, tempName);
+      fs.writeFileSync(filePath, Buffer.from(base64, "base64"));
     } else if (req.body?.imageBase64) {
       const base64 = req.body.imageBase64.replace(/^data:.*;base64,/, "");
       const tempName = `${Date.now()}-${Math.random().toString(16).slice(2)}.png`;
       filePath = path.join(uploadDir, tempName);
       fs.writeFileSync(filePath, Buffer.from(base64, "base64"));
     } else {
-      return res.status(400).json({ error: "No image provided. Use 'image' field (multipart) or 'imageBase64' (JSON)." });
+      return res.status(400).json({ error: "Provide an image via multipart 'image' or JSON { captcha: base64 } or { imageBase64: base64 }." });
     }
 
     // Multi-pass preprocessing: generate several candidate images with different
@@ -107,7 +113,9 @@ app.post("/solve", upload.single("image"), async (req, res) => {
     const corrected = postCorrect(best.cleaned || best.raw.toUpperCase().replace(/[^A-Z0-9]/g, ''));
     const resultText = corrected || (best.raw || '').replace(/\s+/g, ' ').trim();
 
-    return res.json({ text: resultText, raw: best.raw, candidateScore: best.score, tried: candidates.map(c => ({ desc: c.desc, cleaned: c.cleaned, raw: c.raw, score: c.score })) });
+    // Return in the exact format the challenge expects: { solution: "..." }
+    // (Keep optional debug info under a separate key for our own testing.)
+    return res.json({ solution: resultText, debug: { raw: best.raw, candidateScore: best.score, tried: candidates.map(c => ({ desc: c.desc, cleaned: c.cleaned, raw: c.raw, score: c.score })) } });
   } catch (err) {
     removeFile(filePath);
     console.error("OCR error", err);
