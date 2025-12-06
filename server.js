@@ -2,7 +2,7 @@ import express from "express";
 import cors from "cors";
 import fs from "fs";
 import path from "path";
-import { createWorker } from "tesseract.js";
+import * as Tesseract from "tesseract.js";
 
 // Direct tessdata to the bundled eng.traineddata to avoid slow downloads on Azure.
 const tessDataPath = process.cwd();
@@ -28,6 +28,10 @@ let workerInitError = null;
 
 async function initWorker() {
   try {
+    const createWorker = Tesseract.createWorker || Tesseract.createWorkerFromInstance || Tesseract.createWorkerFromProvided; // safest fetch
+    if (!createWorker) {
+      throw new Error("createWorker is not available in tesseract.js import");
+    }
     worker = createWorker({
       langPath: tessDataPath,
       logger: () => {},
