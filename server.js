@@ -74,43 +74,91 @@ async function recognize(base64Data) {
 
   const tempName = `${Date.now()}-${Math.random().toString(16).slice(2)}.png`;
   const tempPath = path.join(uploadDir, tempName);
-  // lightweight single-pass preprocessing to improve accuracy while keeping latency low
+  // quick two-variant preprocessing: normal + stronger-threshold variant
   const inputBuf = Buffer.from(base64Data, "base64");
+  const sharpModule = (await import('sharp')).default;
+  const meta = await sharpModule(inputBuf).metadata().catch(() => ({}));
+  const targetWidth = Math.min(Math.max(meta.width || 300, 300) * 2, 1200);
+  const variantPaths = [];
   try {
-    const sharp = (await import('sharp')).default;
-    const meta = await sharp(inputBuf).metadata().catch(() => ({}));
-    const targetWidth = Math.min(Math.max(meta.width || 300, 300) * 2, 1200);
-    const proc = sharp(inputBuf)
+    // Variant A: moderate threshold
+    const aBuf = await sharpModule(inputBuf)
       .grayscale()
       .normalise()
       .resize({ width: Math.round(targetWidth) })
       .sharpen()
-      .threshold(160)
-      .toFormat('png');
-    const out = await proc.toBuffer();
-    fs.writeFileSync(tempPath, out);
+      .threshold(150)
+      .toFormat('png')
+      .toBuffer();
+    const pathA = tempPath + '.a.png';
+    fs.writeFileSync(pathA, aBuf);
+    variantPaths.push(pathA);
+
+    // Variant B: stronger threshold and contrast
+    const bBuf = await sharpModule(inputBuf)
+      .grayscale()
+      .linear(1.2, -10)
+      .resize({ width: Math.round(Math.min(targetWidth * 1.1, 1400)) })
+      .sharpen()
+      .threshold(180)
+      .toFormat('png')
+      .toBuffer();
+    const pathB = tempPath + '.b.png';
+    fs.writeFileSync(pathB, bBuf);
+    variantPaths.push(pathB);
   } catch (e) {
-    // if preprocessing fails for any reason, fall back to raw write
-    fs.writeFileSync(tempPath, Buffer.from(base64Data, "base64"));
+    // fallback: write original
+    fs.writeFileSync(tempPath, inputBuf);
+    variantPaths.push(tempPath);
   }
 
   try {
-    // hard timeout guard (20s)
-    const ocrPromise = worker.recognize(tempPath, "eng");
-    const { data } = await Promise.race([
-      ocrPromise,
-      new Promise((_, rej) => setTimeout(() => rej(new Error("OCR timeout")), 20000)),
-    ]);
-    const raw = (data?.text || "").trim();
-    let cleaned = raw.toUpperCase().replace(/[^A-Z0-9]/g, "");
+    // Try each variant sequentially (quick); choose best cleaned result
+    const results = [];
+    const perAttemptTimeout = 10000; // 10s per variant max
+    for (const vpath of variantPaths) {
+      try {
+        const ocrPromise = worker.recognize(vpath, "eng");
+        const { data } = await Promise.race([
+          ocrPromise,
+          new Promise((_, rej) => setTimeout(() => rej(new Error("OCR timeout")), perAttemptTimeout)),
+        ]);
+        const raw = (data?.text || "").trim();
+        const cleaned = raw.toUpperCase().replace(/[^A-Z0-9]/g, "");
+        results.push({ raw, cleaned });
+      } catch (e) {
+        results.push({ raw: '', cleaned: '' });
+      }
+    }
+
+    // pick best by cleaned length and alphanumeric quality
+    results.sort((a, b) => (b.cleaned.length - a.cleaned.length) || (b.raw.length - a.raw.length));
+    let final = results[0]?.cleaned || results[0]?.raw || '';
     // conservative post-corrections for common OCR confusions
     function postCorrect(s) {
       if (!s) return s;
       const map = { O: '0', Q: '0', I: '1', L: '1', Z: '2', S: '5', B: '8', G: '6' };
       return s.split('').map(ch => (map[ch] ? map[ch] : ch)).join('');
     }
-    const corrected = postCorrect(cleaned);
-    return corrected || cleaned || raw;
+    final = postCorrect(final.toUpperCase());
+    // prefer reasonable-length tokens (3-8 chars). If final looks garbage (too long
+    // or empty), try to extract a plausible token from the raw results.
+    if (!final || final.length < 3 || final.length > 8) {
+      for (const r of results) {
+        const raw = (r.raw || '').toUpperCase();
+        const m = raw.match(/[A-Z0-9]{3,8}/);
+        if (m) {
+          const cand = postCorrect(m[0]);
+          if (cand && cand.length >= 3) {
+            final = cand;
+            break;
+          }
+        }
+      }
+    }
+    // final safety: trim to max 8 chars
+    if (final && final.length > 8) final = final.slice(0, 8);
+    return final || '';
   } finally {
     try {
       fs.unlinkSync(tempPath);
