@@ -28,9 +28,9 @@ let workerInitError = null;
 
 async function initWorker() {
   try {
-    const createWorker = Tesseract.createWorker || Tesseract.createWorkerFromInstance || Tesseract.createWorkerFromProvided; // safest fetch
+    const createWorker = Tesseract.createWorker || (Tesseract.default && Tesseract.default.createWorker);
     if (!createWorker) {
-      throw new Error("createWorker is not available in tesseract.js import");
+      throw new Error("createWorker is not available in tesseract.js import (check CommonJS/ESM interop)");
     }
     worker = createWorker({
       langPath: tessDataPath,
