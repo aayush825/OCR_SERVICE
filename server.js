@@ -127,6 +127,7 @@ async function recognize(base64Data) {
         const cleaned = raw.toUpperCase().replace(/[^A-Z0-9]/g, "");
         results.push({ raw, cleaned });
       } catch (e) {
+        console.error("OCR variant error:", e);
         results.push({ raw: '', cleaned: '' });
       }
     }
@@ -137,6 +138,7 @@ async function recognize(base64Data) {
     // conservative post-corrections for common OCR confusions
     function postCorrect(s) {
       if (!s) return s;
+      // only apply map if result doesn't look already clean
       const map = { O: '0', Q: '0', I: '1', L: '1', Z: '2', S: '5', B: '8', G: '6' };
       return s.split('').map(ch => (map[ch] ? map[ch] : ch)).join('');
     }
@@ -158,13 +160,14 @@ async function recognize(base64Data) {
     }
     // final safety: trim to max 8 chars
     if (final && final.length > 8) final = final.slice(0, 8);
+    console.log("OCR final result:", final);
     return final || '';
   } finally {
-    try {
-      fs.unlinkSync(tempPath);
-    } catch (_) {
-      // ignore cleanup failures
+    // cleanup all variant files
+    for (const vp of variantPaths) {
+      try { fs.unlinkSync(vp); } catch (_) {}
     }
+    try { fs.unlinkSync(tempPath); } catch (_) {}
   }
 }
 
