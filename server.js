@@ -45,6 +45,7 @@ async function initWorker() {
     await worker.setParameters({
       tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
       user_defined_dpi: "200",
+      tessedit_pageseg_mode: "7",
     });
     workerReady = true;
     console.log("Tesseract worker initialized");
@@ -73,7 +74,25 @@ async function recognize(base64Data) {
 
   const tempName = `${Date.now()}-${Math.random().toString(16).slice(2)}.png`;
   const tempPath = path.join(uploadDir, tempName);
-  fs.writeFileSync(tempPath, Buffer.from(base64Data, "base64"));
+  // lightweight single-pass preprocessing to improve accuracy while keeping latency low
+  const inputBuf = Buffer.from(base64Data, "base64");
+  try {
+    const sharp = (await import('sharp')).default;
+    const meta = await sharp(inputBuf).metadata().catch(() => ({}));
+    const targetWidth = Math.min(Math.max(meta.width || 300, 300) * 2, 1200);
+    const proc = sharp(inputBuf)
+      .grayscale()
+      .normalise()
+      .resize({ width: Math.round(targetWidth) })
+      .sharpen()
+      .threshold(160)
+      .toFormat('png');
+    const out = await proc.toBuffer();
+    fs.writeFileSync(tempPath, out);
+  } catch (e) {
+    // if preprocessing fails for any reason, fall back to raw write
+    fs.writeFileSync(tempPath, Buffer.from(base64Data, "base64"));
+  }
 
   try {
     // hard timeout guard (20s)
@@ -83,8 +102,15 @@ async function recognize(base64Data) {
       new Promise((_, rej) => setTimeout(() => rej(new Error("OCR timeout")), 20000)),
     ]);
     const raw = (data?.text || "").trim();
-    const cleaned = raw.toUpperCase().replace(/[^A-Z0-9]/g, "");
-    return cleaned || raw;
+    let cleaned = raw.toUpperCase().replace(/[^A-Z0-9]/g, "");
+    // conservative post-corrections for common OCR confusions
+    function postCorrect(s) {
+      if (!s) return s;
+      const map = { O: '0', Q: '0', I: '1', L: '1', Z: '2', S: '5', B: '8', G: '6' };
+      return s.split('').map(ch => (map[ch] ? map[ch] : ch)).join('');
+    }
+    const corrected = postCorrect(cleaned);
+    return corrected || cleaned || raw;
   } finally {
     try {
       fs.unlinkSync(tempPath);
