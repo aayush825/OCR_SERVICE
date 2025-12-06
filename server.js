@@ -32,13 +32,16 @@ async function initWorker() {
     if (!createWorker) {
       throw new Error("createWorker is not available in tesseract.js import (check CommonJS/ESM interop)");
     }
-    worker = createWorker({
+    // createWorker returns a Promise that resolves to the worker object in this
+    // tesseract.js version. Await it so we get the actual worker with methods.
+    worker = await createWorker({
       langPath: tessDataPath,
       logger: () => {},
     });
-    await worker.load();
-    await worker.loadLanguage("eng");
-    await worker.initialize("eng");
+    console.log("createWorker resolved, initializing worker methods...");
+    if (typeof worker.load === 'function') await worker.load();
+    if (typeof worker.loadLanguage === 'function') await worker.loadLanguage("eng");
+    if (typeof worker.initialize === 'function') await worker.initialize("eng");
     await worker.setParameters({
       tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
       user_defined_dpi: "200",
