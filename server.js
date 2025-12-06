@@ -9,11 +9,21 @@ import sharp from "sharp";
 const uploadDir = path.join(process.cwd(), "uploads");
 fs.mkdirSync(uploadDir, { recursive: true });
 
+// Use local tessdata so Azure does not fetch language files on first request.
+const tessDataPath = process.cwd();
+process.env.TESSDATA_PREFIX = tessDataPath;
+
 const upload = multer({ dest: uploadDir });
 const app = express();
 
 app.use(cors());
 app.use(express.json({ limit: "15mb" }));
+
+// Minimal request log to debug 502s and routing issues.
+app.use((req, _res, next) => {
+  console.log(`${new Date().toISOString()} ${req.method} ${req.url}`);
+  next();
+});
 
 // Simple health endpoint
 app.get("/", (req, res) => {
@@ -71,7 +81,12 @@ app.post("/solve", upload.single("image"), async (req, res) => {
     const v2 = await sharp(imgBuf).grayscale().modulate({ brightness: 1, saturation: 1 }).linear(1.2, -10).blur(0.5).resize({ width: Math.min(baseWidth * 2, 2000) }).threshold(150).toBuffer();
     variants.push({ buf: v2, desc: 'contrast-blur' });
 
-    const tessOptions = { logger: () => {}, tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', psm: '7' };
+    const tessOptions = {
+      logger: () => {},
+      tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789',
+      psm: '7',
+      langPath: tessDataPath,
+    };
 
     const candidates = [];
     for (let i = 0; i < variants.length; i++) {
